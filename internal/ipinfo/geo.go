@@ -55,6 +55,11 @@ var (
 // Результат запоминается: шапка отчёта (sysinfo) и тест «IP Location»
 // спрашивают одно и то же, а лимиты бесплатных API невелики. Неудача тоже
 // кэшируется — иначе каждый следующий тест снова ждал бы таймаута.
+//
+// Наружу отдаётся копия, а не запомненный указатель. Он попадает прямо в
+// отчёт (Rep.IP.IPv4), и общий на всех вызывающих указатель означал бы, что
+// правка отчёта на месте незаметно меняет кэш, а два теста, читающих его
+// одновременно, ловят гонку.
 func LookupGeo(ctx context.Context, f netutil.Family) (*report.Geo, error) {
 	cacheMu.Lock()
 	if g, ok := geoMemo[f]; ok {
@@ -62,7 +67,7 @@ func LookupGeo(ctx context.Context, f netutil.Family) (*report.Geo, error) {
 		if g == nil {
 			return nil, errors.New("no public address for " + string(f))
 		}
-		return g, nil
+		return cloneGeo(g), nil
 	}
 	cacheMu.Unlock()
 
@@ -79,7 +84,7 @@ func LookupGeo(ctx context.Context, f netutil.Family) (*report.Geo, error) {
 			cacheMu.Lock()
 			geoMemo[f] = g
 			cacheMu.Unlock()
-			return g, nil
+			return cloneGeo(g), nil
 		}
 		if err != nil {
 			lastErr = err
@@ -110,6 +115,17 @@ func sanitize(g *report.Geo) error {
 	}
 	g.IP = parsed.String()
 	return nil
+}
+
+// cloneGeo копирует запись целиком. Geo — плоская структура из строк, чисел
+// и флагов, без срезов и указателей, поэтому поверхностной копии достаточно;
+// при добавлении сюда среза копию придётся углубить.
+func cloneGeo(g *report.Geo) *report.Geo {
+	if g == nil {
+		return nil
+	}
+	c := *g
+	return &c
 }
 
 // ResetCache сбрасывает запомненные результаты. Нужен только тестам, чтобы
