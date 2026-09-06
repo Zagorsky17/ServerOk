@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,15 +31,12 @@ import (
 
 const (
 	cfBase = "https://speed.cloudflare.com"
-	// cfStreams — сколько параллельных потоков. Один поток TCP на дальнем
-	// плече не выбирает гигабитный канал из-за окна перегрузки; четыре —
-	// компромисс между точностью и нагрузкой на чужой сервис.
+	// cfStreams — сколько параллельных потоков (зачем они — см. speedwindow.go).
+	// Четыре: до ближайшего edge-узла плечо короткое, а нагружать чужой сервис
+	// сильнее незачем.
 	cfStreams = 4
-	// Замер идёт фиксированное время, а не фиксированный объём. С объёмом
-	// результат зависит от RTT: на плече с задержкой 80 мс передача в
-	// несколько мегабайт целиком проходит в фазе разгона TCP и занижает
-	// скорость в разы. Первые cfWarmup секунд по той же причине выбрасываются
-	// из расчёта — они и есть разгон.
+	// Длительность окна и разгон — см. measureWindow: замер идёт фиксированное
+	// время, первые cfWarmup секунд не считаются.
 	cfDownWindow = 5 * time.Second
 	cfUpWindow   = 5 * time.Second
 	cfWarmup     = 1500 * time.Millisecond
@@ -167,102 +163,12 @@ func cfUpload(ctx context.Context, client *http.Client) (float64, error) {
 	return cfMeasure(ctx, client, true, cfUpWindow, cfUpChunk, cfMaxUpload)
 }
 
-// cfMeasure гоняет cfStreams параллельных передач в течение window и
-// возвращает скорость в Мбит/с.
-//
-// Считается не весь объём, а только тот, что прошёл после cfWarmup: к этому
-// моменту окно перегрузки TCP раскрыто, и цифра отражает канал, а не разгон.
-// Если до конца разгона дело не дошло (медленный канал, ранний обрыв), берётся
-// всё измеренное — это занижает результат, но лучше, чем пустая строка.
-func cfMeasure(ctx context.Context, client *http.Client, upload bool, window time.Duration, chunk, budget int64) (float64, error) {
-	// Окну даётся небольшой запас: соединения обрываются по этому контексту,
-	// и он же не даёт зависшему потоку задержать весь тест.
-	ctx, cancel := context.WithTimeout(ctx, window+10*time.Second)
-	defer cancel()
-	deadline := time.Now().Add(window)
-
-	var (
-		moved     atomic.Int64
-		warmBytes atomic.Int64
-		warmNanos atomic.Int64
-		wg        sync.WaitGroup
-		mu        sync.Mutex
-		first     error
-	)
-	// Снимок счётчика на границе разгона: вычитая его, получаем «чистый»
-	// участок замера.
-	timer := time.AfterFunc(cfWarmup, func() {
-		warmBytes.Store(moved.Load())
-		warmNanos.Store(time.Now().UnixNano())
+// cfMeasure — замер одного направления через общий движок (см. speedwindow.go).
+func cfMeasure(ctx context.Context, client *http.Client, upload bool, length time.Duration, chunk, budget int64) (float64, error) {
+	w := window{streams: cfStreams, length: length, warmup: cfWarmup, budget: budget}
+	return measureWindow(ctx, w, func(ctx context.Context, moved *atomic.Int64) (int64, error) {
+		return cfTransfer(ctx, client, chunk, upload, moved)
 	})
-	defer timer.Stop()
-
-	perStream := budget / cfStreams
-	start := time.Now()
-	for i := 0; i < cfStreams; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var sent int64
-			for time.Now().Before(deadline) && sent < perStream && ctx.Err() == nil {
-				n, err := cfTransfer(ctx, client, chunk, upload, &moved)
-				sent += n
-				if err != nil {
-					// Обрыв по концу окна — это норма, а не сбой.
-					if ctx.Err() == nil && time.Now().Before(deadline) {
-						mu.Lock()
-						if first == nil {
-							first = err
-						}
-						mu.Unlock()
-					}
-					return
-				}
-			}
-		}()
-	}
-	// Потоки сами следят за deadline; отменяем контекст, как только окно
-	// вышло, чтобы не ждать хвост последнего запроса.
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Until(deadline)):
-		cancel()
-		<-done
-	}
-
-	// Таймер снимка останавливается до чтения счётчиков: иначе он мог бы
-	// сработать между чтением total и warm, и разница вышла бы нулевой на
-	// вполне успешном замере.
-	timer.Stop()
-	total, warm, warmAt := moved.Load(), warmBytes.Load(), warmNanos.Load()
-	// Мегабайт — нижняя граница осмысленного замера. Меньше означает, что
-	// потоки умерли почти сразу (отказ, обрыв), и делить это на время нельзя:
-	// получится «0.00 Mbps» вместо честной ошибки.
-	if total < 1<<20 && first != nil {
-		return 0, first
-	}
-	bytes, elapsed := total, time.Since(start)
-	if warmAt != 0 && total > warm {
-		// Разгон отработал — считаем только то, что после него.
-		bytes, elapsed = total-warm, time.Since(time.Unix(0, warmAt))
-	}
-	if bytes <= 0 || elapsed <= 0 {
-		// Замер уложился в разгон целиком (быстро упёрлись в потолок трафика
-		// или оборвались): считаем по всему окну — грубее, но это результат.
-		bytes, elapsed = total, time.Since(start)
-	}
-	if bytes == 0 || elapsed <= 0 {
-		if first != nil {
-			return 0, first
-		}
-		return 0, errors.New("no data was transferred")
-	}
-	return float64(bytes) * 8 / elapsed.Seconds() / 1e6, nil
 }
 
 // cfTransfer выполняет одну передачу и возвращает число прошедших байт,

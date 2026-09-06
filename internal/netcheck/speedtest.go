@@ -14,8 +14,10 @@ import (
 	"github.com/Zagorsky17/ServerOk/internal/report"
 )
 
-// speedtest.go — измерение скорости канала через инфраструктуру speedtest.net
-// (библиотека speedtest-go, чистый Go, без внешних бинарников).
+// speedtest.go — выбор точек и серверов для замера через инфраструктуру
+// speedtest.net. Список серверов, выбор сервера и пинг берутся из библиотеки
+// speedtest-go (чистый Go, без внешних бинарников), сам замер скорости —
+// в speedookla.go, там же объяснено почему.
 //
 // Главное отличие от bench.sh и его клонов: серверы ищутся по названию города,
 // а не по «зашитым» числовым ID. Идентификаторы устаревают — спонсоры уходят,
@@ -178,7 +180,7 @@ func ooklaSpeedtest(ctx context.Context, set string, onResult func(report.SpeedN
 			return out, nil
 		}
 		status("speedtest: %s", n.Label)
-		out.Nodes = append(out.Nodes, measureNode(ctx, base, n))
+		out.Nodes = append(out.Nodes, measureNode(ctx, base, n, status))
 		if onResult != nil {
 			onResult(out.Nodes[len(out.Nodes)-1])
 		}
@@ -191,17 +193,16 @@ func ooklaSpeedtest(ctx context.Context, set string, onResult func(report.SpeedN
 
 // measureNode измеряет одну точку: задержка, отдача, приём — в этом порядке.
 // Задержка первой: она дешёвая и сразу отсеивает нерабочий сервер.
-func measureNode(ctx context.Context, base *speedtest.Speedtest, n node) report.SpeedNode {
+func measureNode(ctx context.Context, base *speedtest.Speedtest, n node, status func(string, ...any)) report.SpeedNode {
 	row := report.SpeedNode{Name: n.Label}
 	ctx, cancel := context.WithTimeout(ctx, nodeTimeout)
 	defer cancel()
 
-	client, candidates, err := pickServers(ctx, base, n)
+	candidates, err := pickServers(ctx, base, n)
 	if err != nil {
 		row.Failed, row.Err = true, report.Truncate(err.Error(), 60)
 		return row
 	}
-	defer client.Manager.Reset()
 
 	// Перебираем кандидатов: если сервер не отвечает или отдаёт мусор, пробуем
 	// следующий в том же городе, и только исчерпав всех, помечаем точку как
@@ -221,25 +222,17 @@ func measureNode(ctx context.Context, base *speedtest.Speedtest, n node) report.
 		}
 		res.LatencyMs = float64(srv.Latency.Microseconds()) / 1000
 
-		if err := srv.UploadTestContext(ctx); err != nil {
+		up, down, err := ooklaMeasure(ctx, srv, status, n.Label)
+		if err != nil {
 			lastErr = err
-			client.Manager.Reset()
 			continue
 		}
-		res.UploadMbps = srv.ULSpeed.Mbps()
-
-		if err := srv.DownloadTestContext(ctx); err != nil {
-			lastErr = err
-			client.Manager.Reset()
-			continue
-		}
-		res.DownMbps = srv.DLSpeed.Mbps()
+		res.UploadMbps, res.DownMbps = up, down
 
 		// Сервер ответил, но не передал ничего — это поломка, а не медленный
 		// канал; такой результат в отчёт пускать нельзя.
 		if res.UploadMbps <= 0 || res.DownMbps <= 0 {
 			lastErr = errors.New("server reported zero throughput")
-			client.Manager.Reset()
 			continue
 		}
 		return res
@@ -256,44 +249,46 @@ func measureNode(ctx context.Context, base *speedtest.Speedtest, n node) report.
 
 // pickServers подбирает до трёх кандидатов для точки: ближайший сервер,
 // совпадение по названию города или конкретный ID, если он задан явно.
-func pickServers(ctx context.Context, base *speedtest.Speedtest, n node) (*speedtest.Speedtest, []*speedtest.Server, error) {
+func pickServers(ctx context.Context, base *speedtest.Speedtest, n node) ([]*speedtest.Server, error) {
 	if n.Search == "" {
 		servers, err := fetchServerList(ctx, base)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		targets, err := servers.FindServer(nil)
 		if err != nil || len(targets) == 0 {
-			return nil, nil, errors.New("no nearby server")
+			return nil, errors.New("no nearby server")
 		}
 		alive := reachable(ctx, limit(targets, 6), 2)
 		if len(alive) == 0 {
-			return nil, nil, errors.New("no reachable nearby server")
+			return nil, errors.New("no reachable nearby server")
 		}
-		return base, alive, nil
+		return alive, nil
 	}
 	if isServerID(n.Search) {
 		srv, err := base.FetchServerByIDContext(ctx, n.Search)
 		if err != nil {
-			return nil, nil, fmt.Errorf("server %s unavailable", n.Search)
+			return nil, fmt.Errorf("server %s unavailable", n.Search)
 		}
-		return base, []*speedtest.Server{srv}, nil
+		return []*speedtest.Server{srv}, nil
 	}
 
 	client := speedtest.New()
 	client.NewUserConfig(&speedtest.UserConfig{Keyword: n.Search})
 	servers, err := fetchServerList(ctx, client)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	matched := reachable(ctx, matchServers(servers, n), 3)
 	if len(matched) == 0 {
-		return nil, nil, fmt.Errorf("no reachable server near %s", n.Label)
+		return nil, fmt.Errorf("no reachable server near %s", n.Label)
 	}
+	// Пинг идёт клиентом библиотеки, и ему нужен тот же контекст, в котором
+	// сервер был найден.
 	for _, s := range matched {
 		s.Context = client
 	}
-	return client, matched, nil
+	return matched, nil
 }
 
 // Список серверов запрашивается один раз на город, и при наборе из шести
@@ -375,32 +370,75 @@ func reachable(ctx context.Context, candidates []*speedtest.Server, want int) []
 		idx int
 		ok  bool
 	}
+	// Своя отмена — ради раннего выхода ниже: недоделанные пробы нужно
+	// прекратить, а не бросить висеть до конца их таймаута.
+	pctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Буфер на всех: горутина, чей результат уже не нужен, должна суметь
+	// отправить его и завершиться, а не залипнуть на отправке навсегда.
 	results := make(chan probe, len(candidates))
 	for i, s := range candidates {
 		go func(i int, host string) {
 			client := netutil.Client(netutil.Any, 5*time.Second)
 			defer client.CloseIdleConnections()
 			// Любой ответ означает, что демон speedtest жив.
-			_, err := netutil.Get(ctx, client, "http://"+host+"/speedtest/upload.php", 4<<10, nil)
+			_, err := netutil.Get(pctx, client, "http://"+host+"/speedtest/upload.php", 4<<10, nil)
 			results <- probe{i, err == nil}
 		}(i, s.Host)
 	}
-	alive := make([]bool, len(candidates))
-	for range candidates {
+
+	picker := newPrefixPicker(len(candidates), want)
+	for pending := len(candidates); pending > 0 && !picker.full(); pending-- {
 		p := <-results
-		alive[p.idx] = p.ok
+		picker.mark(p.idx, p.ok)
 	}
 	var out []*speedtest.Server
-	for i, s := range candidates {
-		if alive[i] {
-			out = append(out, s)
-		}
-		if len(out) == want {
-			break
-		}
+	for _, i := range picker.chosen {
+		out = append(out, candidates[i])
 	}
 	return out
 }
+
+// prefixPicker набирает первых want живых кандидатов, сохраняя их исходный
+// порядок: он же порядок приоритета (сначала серверы нужного города, потом
+// страны, потом всё остальное), поэтому «первый ответивший» и «лучший» — не
+// одно и то же, и брать кандидатов в порядке прихода проб нельзя.
+//
+// Отсюда же берётся ранний выход. Решение про кандидата принимается, как
+// только известен весь префикс до него, поэтому набрать want удаётся обычно
+// задолго до того, как ответят все пробы. Ждать остальных незачем: мёртвый
+// спонсор держит соединение все пять секунд таймаута, и на наборе из шести
+// городов это полминуты пустого ожидания.
+type prefixPicker struct {
+	state  []int8 // 0 — ещё неизвестно, 1 — отвечает, -1 — молчит
+	next   int    // граница разобранного префикса
+	want   int
+	chosen []int // индексы выбранных кандидатов, в исходном порядке
+}
+
+func newPrefixPicker(n, want int) *prefixPicker {
+	return &prefixPicker{state: make([]int8, n), want: want}
+}
+
+// mark учитывает результат одной пробы и продвигает границу префикса
+// настолько, насколько позволяет уже известное.
+func (p *prefixPicker) mark(idx int, alive bool) {
+	if alive {
+		p.state[idx] = 1
+	} else {
+		p.state[idx] = -1
+	}
+	for p.next < len(p.state) && p.state[p.next] != 0 && !p.full() {
+		if p.state[p.next] == 1 {
+			p.chosen = append(p.chosen, p.next)
+		}
+		p.next++
+	}
+}
+
+// full сообщает, что нужное количество набрано и оставшиеся пробы не важны.
+func (p *prefixPicker) full() bool { return len(p.chosen) >= p.want }
 
 // limit обрезает список кандидатов.
 func limit(in []*speedtest.Server, n int) []*speedtest.Server {

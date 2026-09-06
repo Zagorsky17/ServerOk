@@ -11,6 +11,7 @@ package bench
 import (
 	"context"
 	"math/rand/v2"
+	"runtime/debug"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/mem"
@@ -88,7 +89,15 @@ func Memory(ctx context.Context, status func(string, ...any)) (*report.MemBench,
 
 	// Освобождаем буферы пропускной способности перед выделением массива для
 	// замера задержки: держать оба одновременно на маленькой машине нельзя.
+	//
+	// Одного обнуления ссылок мало — сборщик запустится, только когда куча
+	// снова дорастёт до порога, а порог после гигабайта буферов высокий.
+	// Замер это подтверждал: при буфере 512 МиБ пик достигал 1157 МБ, то есть
+	// src, dst и массив задержки лежали в памяти одновременно. FreeOSMemory
+	// собирает мусор и отдаёт страницы ядру, поэтому обещание выше становится
+	// правдой, а не намерением.
 	src, dst = nil, nil
+	debug.FreeOSMemory()
 
 	status("memory: random access latency")
 	res.LatencyNs = pointerChase(chaseSize(availableRAM(ctx)))

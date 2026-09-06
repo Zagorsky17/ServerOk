@@ -60,6 +60,19 @@ func Dialer(f Family, timeout time.Duration) *net.Dialer {
 // сделать defer c.CloseIdleConnections(), иначе висящие keep-alive соединения
 // живут до конца процесса.
 func Client(f Family, timeout time.Duration) *http.Client {
+	return StreamClient(f, timeout, 0)
+}
+
+// StreamClient — то же самое, но для замеров скорости: streams параллельных
+// соединений к одному хосту должны переживать паузу между запросами.
+//
+// Без этого http.Transport держит про запас всего два простаивающих соединения
+// на хост (DefaultMaxIdleConnsPerHost = 2), и в остальных потоках каждый
+// следующий кусок уезжает по свежему TCP-соединению — то есть заново с начала
+// разгона. Чем длиннее плечо, тем сильнее такой замер занижает скорость.
+//
+// streams <= 0 означает «обычный клиент», с умолчаниями транспорта.
+func StreamClient(f Family, timeout time.Duration, streams int) *http.Client {
 	network := string(f)
 	if network == "" {
 		network = "tcp"
@@ -75,6 +88,12 @@ func Client(f Family, timeout time.Duration) *http.Client {
 		ResponseHeaderTimeout: timeout,
 		MaxIdleConns:          16,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+	if streams > 0 {
+		tr.MaxIdleConnsPerHost = streams
+		if tr.MaxIdleConns < streams {
+			tr.MaxIdleConns = streams
+		}
 	}
 	// Timeout на клиенте — общий лимит на запрос целиком, включая чтение тела.
 	return &http.Client{Transport: tr, Timeout: timeout}

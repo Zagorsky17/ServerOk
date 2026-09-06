@@ -99,3 +99,53 @@ func TestNormalizeMethod(t *testing.T) {
 		}
 	}
 }
+
+// TestPrefixPicker проверяет отбор живых кандидатов: он обязан сохранять
+// исходный приоритет независимо от того, в каком порядке ответили пробы, —
+// именно это отличает «лучший сервер» от «первого ответившего».
+func TestPrefixPicker(t *testing.T) {
+	cases := []struct {
+		name  string
+		alive []bool // кто отвечает, в исходном порядке кандидатов
+		order []int  // в каком порядке приходят результаты проб
+		want  int
+		out   []int
+	}{
+		{"все живы, берём первых двух", []bool{true, true, true}, []int{0, 1, 2}, 2, []int{0, 1}},
+		{"ответы пришли задом наперёд", []bool{true, true, true}, []int{2, 1, 0}, 2, []int{0, 1}},
+		{"быстрый мёртвый не вытесняет медленного живого",
+			[]bool{false, true, true}, []int{0, 2, 1}, 2, []int{1, 2}},
+		{"живых меньше, чем нужно", []bool{false, true, false}, []int{1, 0, 2}, 3, []int{1}},
+		{"живых нет", []bool{false, false}, []int{0, 1}, 2, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := newPrefixPicker(len(c.alive), c.want)
+			for _, idx := range c.order {
+				if p.full() {
+					break
+				}
+				p.mark(idx, c.alive[idx])
+			}
+			if len(p.chosen) != len(c.out) {
+				t.Fatalf("chosen = %v, want %v", p.chosen, c.out)
+			}
+			for i, v := range c.out {
+				if p.chosen[i] != v {
+					t.Fatalf("chosen = %v, want %v", p.chosen, c.out)
+				}
+			}
+		})
+	}
+}
+
+// TestPrefixPickerStopsEarly фиксирует смысл раннего выхода: как только
+// нужное количество набрано, оставшиеся пробы можно не ждать.
+func TestPrefixPickerStopsEarly(t *testing.T) {
+	p := newPrefixPicker(6, 2)
+	p.mark(0, true)
+	p.mark(1, true)
+	if !p.full() {
+		t.Fatalf("picker should be full after two alive candidates, chosen = %v", p.chosen)
+	}
+}
