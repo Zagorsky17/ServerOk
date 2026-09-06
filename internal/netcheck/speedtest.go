@@ -375,32 +375,75 @@ func reachable(ctx context.Context, candidates []*speedtest.Server, want int) []
 		idx int
 		ok  bool
 	}
+	// Своя отмена — ради раннего выхода ниже: недоделанные пробы нужно
+	// прекратить, а не бросить висеть до конца их таймаута.
+	pctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Буфер на всех: горутина, чей результат уже не нужен, должна суметь
+	// отправить его и завершиться, а не залипнуть на отправке навсегда.
 	results := make(chan probe, len(candidates))
 	for i, s := range candidates {
 		go func(i int, host string) {
 			client := netutil.Client(netutil.Any, 5*time.Second)
 			defer client.CloseIdleConnections()
 			// Любой ответ означает, что демон speedtest жив.
-			_, err := netutil.Get(ctx, client, "http://"+host+"/speedtest/upload.php", 4<<10, nil)
+			_, err := netutil.Get(pctx, client, "http://"+host+"/speedtest/upload.php", 4<<10, nil)
 			results <- probe{i, err == nil}
 		}(i, s.Host)
 	}
-	alive := make([]bool, len(candidates))
-	for range candidates {
+
+	picker := newPrefixPicker(len(candidates), want)
+	for pending := len(candidates); pending > 0 && !picker.full(); pending-- {
 		p := <-results
-		alive[p.idx] = p.ok
+		picker.mark(p.idx, p.ok)
 	}
 	var out []*speedtest.Server
-	for i, s := range candidates {
-		if alive[i] {
-			out = append(out, s)
-		}
-		if len(out) == want {
-			break
-		}
+	for _, i := range picker.chosen {
+		out = append(out, candidates[i])
 	}
 	return out
 }
+
+// prefixPicker набирает первых want живых кандидатов, сохраняя их исходный
+// порядок: он же порядок приоритета (сначала серверы нужного города, потом
+// страны, потом всё остальное), поэтому «первый ответивший» и «лучший» — не
+// одно и то же, и брать кандидатов в порядке прихода проб нельзя.
+//
+// Отсюда же берётся ранний выход. Решение про кандидата принимается, как
+// только известен весь префикс до него, поэтому набрать want удаётся обычно
+// задолго до того, как ответят все пробы. Ждать остальных незачем: мёртвый
+// спонсор держит соединение все пять секунд таймаута, и на наборе из шести
+// городов это полминуты пустого ожидания.
+type prefixPicker struct {
+	state  []int8 // 0 — ещё неизвестно, 1 — отвечает, -1 — молчит
+	next   int    // граница разобранного префикса
+	want   int
+	chosen []int // индексы выбранных кандидатов, в исходном порядке
+}
+
+func newPrefixPicker(n, want int) *prefixPicker {
+	return &prefixPicker{state: make([]int8, n), want: want}
+}
+
+// mark учитывает результат одной пробы и продвигает границу префикса
+// настолько, насколько позволяет уже известное.
+func (p *prefixPicker) mark(idx int, alive bool) {
+	if alive {
+		p.state[idx] = 1
+	} else {
+		p.state[idx] = -1
+	}
+	for p.next < len(p.state) && p.state[p.next] != 0 && !p.full() {
+		if p.state[p.next] == 1 {
+			p.chosen = append(p.chosen, p.next)
+		}
+		p.next++
+	}
+}
+
+// full сообщает, что нужное количество набрано и оставшиеся пробы не важны.
+func (p *prefixPicker) full() bool { return len(p.chosen) >= p.want }
 
 // limit обрезает список кандидатов.
 func limit(in []*speedtest.Server, n int) []*speedtest.Server {
