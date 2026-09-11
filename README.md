@@ -143,19 +143,20 @@ rm "$(go env GOPATH)/bin/serverok"
 ## The menu
 
 ```
-  1) System Information               6) IP Location & Registration
-  2) CPU Benchmark                    7) IP Reputation (DNSBL)
-  3) Memory Benchmark                 8) Streaming & AI Service Unblock
-  4) Disk I/O Speed                   9) Routing, Latency & Ports
-  5) Network Speedtest               10) Domain WHOIS Lookup
+  1) System Information               7) IP Reputation (DNSBL)
+  2) CPU Benchmark                    8) Streaming & AI Service Unblock
+  3) Memory Benchmark                 9) Messenger & Social Blocking
+  4) Disk I/O Speed                  10) Routing, Latency & Ports
+  5) Network Speedtest               11) Domain WHOIS Lookup
+  6) IP Location & Registration
   a) Run all tests                    0) Quit
- Select (1-10 or a):
+ Select (1-11 or a):
 ```
 
 The menu comes back after every run, so you can keep picking tests; the tool
 exits when you choose `0` or press Ctrl+C.
 
-Item 10 asks which domain to look up (a pasted URL works — `https://example.com/x`
+Item 11 asks which domain to look up (a pasted URL works — `https://example.com/x`
 becomes `example.com`); pressing Enter without typing anything skips it. Passing
 `-domain example.com` answers the question in advance, and without a domain the
 lookup is left out of `-all` runs — it would have nothing to query.
@@ -172,6 +173,7 @@ lookup is left out of `-all` runs — it would have nothing to query.
 | **IP Location & Registration** | Geolocation of the IPv4/IPv6 address (ASN, ISP, city, hosting/proxy flags) **and the RDAP record: network name, CIDR, allocation type, registry, registrant organization, registration dates and the abuse contact** |
 | **IP Reputation (DNSBL)** | 14 blocklists (Spamhaus, Barracuda, SpamCop, SORBS, UCEPROTECT, …). Zones that refuse public resolvers are reported as inconclusive, not as "listed" |
 | **Streaming & AI Service Unblock** | Netflix (full / originals-only / blocked), YouTube Premium, Disney+, Prime Video, Spotify, ChatGPT, Claude, TikTok, Steam — with the region each one resolves you to. A service that answers but does not reveal a region is reported as `Unknown`, never as a confident `Yes` |
+| **Messenger & Social Blocking** | Whether Telegram, Instagram, YouTube, Discord and TikTok are blocked on the network path from this server — several endpoints per service (site, API, CDN), each walked through DNS → TCP → TLS → HTTP. The verdict names the step that failed: a missing or spoofed DNS answer (checked against DNS-over-HTTPS), a dead TCP connection (IP block), a reset or stalled TLS handshake or a foreign certificate (SNI filtering), or a transfer that freezes after the first kilobytes (throttling) |
 | **Domain WHOIS Lookup** | Registration record for any domain from [whois.com](https://www.whois.com/) — registrar and IANA ID, abuse contact, creation/expiry/update dates with the days left, EPP status codes, name servers, DNSSEC and the registrant/admin/tech contacts, plus the raw registry record and the domain's live DNS (A, AAAA, NS, MX, TXT, CNAME). When whois.com answers with a captcha, the registry and registrar are queried directly over WHOIS port 43 |
 | **Routing, Latency & Ports** | RTT to 11 global anchors (ICMP, falling back to TCP/443), outbound port reachability (25, 465, 587, … — does the provider block SMTP?), IPv4/IPv6, MTU, congestion control and BBR availability, DNS resolver identity, and traceroutes to four key networks with per-hop AS lookup |
 
@@ -209,6 +211,7 @@ serverok -test speedtest -nodes eu     # speed to Europe only (us, asia too)
 serverok -test speedtest -nodes us,asia          # two regions in one run
 serverok -test speedtest -speed-method cloudflare  # nearest CDN edge, ~20 s
 serverok -test ip,blacklist            # who owns this IP, and is it clean?
+serverok -test blocking                # are Telegram, YouTube & co. blocked here?
 serverok -test whois -domain example.com   # registration record + live DNS
 serverok -all -quiet -json report.json # for cron and dashboards
 ```
@@ -242,6 +245,17 @@ Picking the speedtest from the interactive menu asks which of these to run;
   rather than as a regional block, and reachability without a region marker is
   `Unknown` rather than `Yes` (disneyplus.com, for one, answers 200 worldwide).
   All of them live in `internal/unblock/checks.go`, one function each.
+* **The blocking check separates censorship from a dead network.** Two control
+  hosts (microsoft.com and apple.com, reachable from Russia and China alike)
+  must answer first; if neither does, the test fails instead of calling every
+  service blocked. The system resolver is compared with DNS-over-HTTPS
+  (1.1.1.1, 8.8.8.8) only when its answer looks wrong — an error or a private
+  address — because CDNs legitimately hand out different addresses. Throttling
+  shows up only on responses larger than ~20 KB, which is why some endpoints
+  fetch a thumbnail or a 1.5 MB file instead of a home page. Only IPv4 is
+  checked, and Telegram's data centre speaks MTProto, so it gets a TCP
+  handshake only. The list of endpoints is `Targets` in
+  `internal/blocking/blocking.go`.
 * **The WHOIS lookup reads whois.com first**, because its parsed record looks
   the same for every TLD. That page occasionally comes back as a captcha (most
   often for domains that turn out to be unregistered), so the tool then asks
@@ -291,6 +305,7 @@ internal/bench/       CPU, memory and disk benchmarks
 internal/netcheck/    speedtest, latency, traceroute, ports, stack
 internal/ipinfo/      geolocation, RDAP, DNSBL
 internal/unblock/     streaming and AI service probes
+internal/blocking/    messenger and social network blocking (DNS/TCP/TLS/HTTP)
 internal/whois/       domain lookups: whois.com, WHOIS port 43, DNS records
 internal/report/      data model + text/JSON/Markdown renderers
 ```
