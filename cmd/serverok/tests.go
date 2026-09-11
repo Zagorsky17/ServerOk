@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Zagorsky17/ServerOk/internal/bench"
+	"github.com/Zagorsky17/ServerOk/internal/blocking"
 	"github.com/Zagorsky17/ServerOk/internal/ipinfo"
 	"github.com/Zagorsky17/ServerOk/internal/netcheck"
 	"github.com/Zagorsky17/ServerOk/internal/netutil"
@@ -167,6 +168,18 @@ func buildRegistry() *runner.Registry {
 				return nil
 			},
 			Print: func(r *report.Report) { report.PrintUnblock(r.Unblock) },
+		},
+		runner.Test{
+			ID: "blocking", Title: "Messenger & Social Blocking", Order: 85,
+			Run: func(c *runner.Context) error {
+				res, err := blocking.Run(c, c.Status)
+				if err != nil {
+					return err
+				}
+				c.Rep.Blocking = res
+				return nil
+			},
+			Print: func(r *report.Report) { report.PrintBlocking(r.Blocking) },
 		},
 		runner.Test{
 			ID: "network", Title: "Routing, Latency & Ports", Order: 90, NeedRoot: true,

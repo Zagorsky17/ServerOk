@@ -39,6 +39,7 @@ type Report struct {
 	IP        *IPInfo     `json:"ip_info,omitempty"`
 	Blacklist *Blacklist  `json:"blacklist,omitempty"`
 	Unblock   *Unblock    `json:"unblock,omitempty"`
+	Blocking  *Blocking   `json:"blocking,omitempty"`
 	Network   *NetDiag    `json:"network,omitempty"`
 	Domain    *DomainInfo `json:"domain,omitempty"`
 
@@ -273,6 +274,34 @@ type UnblockItem struct {
 	Status  string `json:"status"` // yes | no | restricted | failed
 	Detail  string `json:"detail,omitempty"`
 	Region  string `json:"region,omitempty"`
+}
+
+// Blocking — не заблокированы ли мессенджеры и соцсети на сетевом уровне:
+// провайдером или страной, где стоит сервер.
+type Blocking struct {
+	Services []BlockService `json:"services"`
+}
+
+// BlockService — вердикт по сервису, сведённый из проверок его адресов.
+// Status: ok | blocked | throttled | partial (часть адресов доступна) | failed.
+type BlockService struct {
+	Name   string       `json:"name"`
+	Status string       `json:"status"`
+	Probes []BlockProbe `json:"endpoints"`
+}
+
+// BlockProbe — проверка одного адреса. Stage — ступень, на которой соединение
+// сломалось (dns | tcp | tls | http): по ней видно, чем именно режут —
+// подменой DNS, по IP или по имени в SNI.
+type BlockProbe struct {
+	Host   string  `json:"host"`
+	IP     string  `json:"ip,omitempty"`
+	Status string  `json:"status"` // ok | blocked | throttled | failed
+	Stage  string  `json:"stage,omitempty"`
+	Detail string  `json:"detail,omitempty"`
+	RTTMs  float64 `json:"connect_ms,omitempty"`
+	HTTP   int     `json:"http_status,omitempty"`
+	KBps   float64 `json:"throughput_kib_s,omitempty"`
 }
 
 // NetDiag — сетевая диагностика: задержки до якорей, исходящие порты,

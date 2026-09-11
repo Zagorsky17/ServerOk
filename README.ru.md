@@ -114,19 +114,20 @@ rm "$(go env GOPATH)/bin/serverok"
 ## Меню
 
 ```
-  1) System Information               6) IP Location & Registration
-  2) CPU Benchmark                    7) IP Reputation (DNSBL)
-  3) Memory Benchmark                 8) Streaming & AI Service Unblock
-  4) Disk I/O Speed                   9) Routing, Latency & Ports
-  5) Network Speedtest               10) Domain WHOIS Lookup
+  1) System Information               7) IP Reputation (DNSBL)
+  2) CPU Benchmark                    8) Streaming & AI Service Unblock
+  3) Memory Benchmark                 9) Messenger & Social Blocking
+  4) Disk I/O Speed                  10) Routing, Latency & Ports
+  5) Network Speedtest               11) Domain WHOIS Lookup
+  6) IP Location & Registration
   a) Run all tests                    0) Quit
- Select (1-10 or a):
+ Select (1-11 or a):
 ```
 
 После каждого прогона меню появляется снова — можно запускать тесты один за
 другим. Программа завершается по пункту `0` или по Ctrl+C.
 
-Пункт 10 спрашивает домен (можно вставить ссылку целиком — из
+Пункт 11 спрашивает домен (можно вставить ссылку целиком — из
 `https://example.com/x` возьмётся `example.com`); пустой ввод пропускает тест.
 Флаг `-domain example.com` отвечает на этот вопрос заранее, а без домена
 справка не попадает в прогон `-all` — спрашивать там некого и не о чем.
@@ -146,6 +147,7 @@ rm "$(go env GOPATH)/bin/serverok"
 | **IP Location & Registration** | Геолокация IPv4/IPv6 (ASN, ISP, город, признаки hosting/proxy) **и запись RDAP: имя сети, CIDR, тип выделения, реестр, организация-владелец, даты регистрации и abuse-контакт** |
 | **IP Reputation (DNSBL)** | 14 чёрных списков (Spamhaus, Barracuda, SpamCop, SORBS, UCEPROTECT и др.). Зоны, отказывающие публичным резолверам, помечаются как неопределённые, а не как «в списке» |
 | **Streaming & AI Service Unblock** | Netflix (полный каталог / только оригиналы / блок), YouTube Premium, Disney+, Prime Video, Spotify, ChatGPT, Claude, TikTok, Steam — с регионом, который видит каждый сервис. Если сервис отвечает, но регион подтвердить нечем, пишется `Unknown`, а не уверенное `Yes` |
+| **Messenger & Social Blocking** | Не заблокированы ли Telegram, Instagram, YouTube, Discord и TikTok на пути от этого сервера — по нескольку адресов на сервис (сайт, API, CDN), и каждый проходится по ступеням DNS → TCP → TLS → HTTP. Вердикт называет ступень, на которой всё сломалось: пропавший или подменённый ответ DNS (сверяется с DNS-over-HTTPS), не проходящий TCP (блокировка по IP), сброс или зависание TLS либо чужой сертификат (фильтрация по SNI), поток, замирающий после первых килобайт (замедление) |
 | **Domain WHOIS Lookup** | Регистрационная запись любого домена с [whois.com](https://www.whois.com/): регистратор и его IANA ID, контакт для жалоб, даты регистрации, продления и изменения с остатком дней, коды статуса EPP, серверы имён, DNSSEC и контакты владельца, администратора и техподдержки. Плюс сырой ответ реестра и текущие записи DNS (A, AAAA, NS, MX, TXT, CNAME). Если whois.com отвечает капчей, реестр и регистратор опрашиваются напрямую по WHOIS на порту 43 |
 | **Routing, Latency & Ports** | RTT до 11 мировых точек (ICMP с откатом на TCP/443), доступность исходящих портов (25, 465, 587 — не режет ли провайдер SMTP), IPv4/IPv6, MTU, congestion control и наличие BBR, публичный DNS-резолвер, трассировки до четырёх ключевых сетей с определением AS каждого хопа |
 
@@ -183,6 +185,7 @@ serverok -test speedtest -nodes eu     # скорость только до Ев
 serverok -test speedtest -nodes us,asia            # два региона за один прогон
 serverok -test speedtest -speed-method cloudflare  # ближайший CDN, ~20 секунд
 serverok -test ip,blacklist            # чей это IP и чист ли он
+serverok -test blocking                # не заблокированы ли Telegram, YouTube и др.
 serverok -test whois -domain example.com   # запись о домене и его DNS
 serverok -all -quiet -json report.json # для cron и дашбордов
 ```
@@ -216,6 +219,16 @@ serverok -all -quiet -json report.json # для cron и дашбордов
   не как гео-блокировка, а доступность без подтверждённого региона — как
   `Unknown`, а не `Yes` (тот же disneyplus.com отвечает 200 из любой страны).
   Все проверки лежат в `internal/unblock/checks.go` — по одной функции на сервис.
+* **Проверка блокировок отличает цензуру от мёртвой сети.** Сначала должны
+  ответить два контрольных хоста (microsoft.com и apple.com — они открыты и в
+  России, и в Китае); если не ответил ни один, тест завершается ошибкой, а не
+  объявляет заблокированным всё подряд. Системный резолвер сверяется с
+  DNS-over-HTTPS (1.1.1.1, 8.8.8.8), только когда его ответ выглядит
+  неправильно — ошибка или частный адрес: CDN законно раздают разные адреса.
+  Замедление видно лишь на ответах больше ~20 КБ, поэтому часть адресов качает
+  обложку видео или файл на 1,5 МБ, а не главную страницу. Проверяется только
+  IPv4; дата-центр Telegram говорит на MTProto, и для него проверяется только
+  TCP. Список адресов — `Targets` в `internal/blocking/blocking.go`.
 * **WHOIS-справка сначала читает whois.com**: его разобранная запись выглядит
   одинаково для всех доменных зон. Эта страница иногда возвращается капчей
   (чаще всего — для доменов, которые оказались свободны), и тогда программа
@@ -263,6 +276,7 @@ internal/bench/       бенчмарки CPU, памяти и диска
 internal/netcheck/    speedtest, задержки, traceroute, порты, стек
 internal/ipinfo/      геолокация, RDAP, DNSBL
 internal/unblock/     проверки стриминга и AI-сервисов
+internal/blocking/    блокировки мессенджеров и соцсетей (DNS/TCP/TLS/HTTP)
 internal/whois/       домен: whois.com, WHOIS на порту 43, записи DNS
 internal/report/      модель данных + рендеры text/JSON/Markdown
 ```
