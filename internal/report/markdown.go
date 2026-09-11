@@ -135,6 +135,17 @@ func Markdown(r *Report) string {
 		b.WriteString("\n")
 	}
 
+	if bk := r.Blocking; bk != nil {
+		b.WriteString("## Service blocking\n\n| Service | Endpoint | Status | Detail |\n|---|---|---|---|\n")
+		for _, s := range bk.Services {
+			fmt.Fprintf(&b, "| **%s** | | **%s** | |\n", s.Name, s.Status)
+			for _, p := range s.Probes {
+				fmt.Fprintf(&b, "| | %s | %s | %s |\n", p.Host, p.Status, p.Detail)
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	if n := r.Network; n != nil {
 		if len(n.Latency) > 0 {
 			b.WriteString("## Latency\n\n| Anchor | RTT | Method |\n|---|---|---|\n")

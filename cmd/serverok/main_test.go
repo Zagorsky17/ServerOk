@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -108,8 +109,11 @@ func TestWhoisEntry(t *testing.T) {
 	if last := all[len(all)-1]; last.ID != "whois" {
 		t.Errorf("whois must be the last menu item, got %q", last.ID)
 	}
-	if sel, err := reg.Select([]string{"10"}); err != nil || sel[0].ID != "whois" {
-		t.Errorf("menu item 10 = %+v %v", sel, err)
+	// Номер пункта берётся из длины реестра: новые тесты встают перед whois,
+	// и зашитая цифра ломалась бы с каждым из них.
+	n := fmt.Sprint(len(all))
+	if sel, err := reg.Select([]string{n}); err != nil || sel[0].ID != "whois" {
+		t.Errorf("menu item %s = %+v %v", n, sel, err)
 	}
 	left := without(all, "whois")
 	if len(left) != len(all)-1 {

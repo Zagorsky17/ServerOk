@@ -349,6 +349,45 @@ func PrintUnblock(u *Unblock) {
 	}
 }
 
+// PrintBlocking печатает доступность мессенджеров и соцсетей: строка сервиса
+// с общим вердиктом, под ней его адреса с причиной. Причина здесь главное —
+// она отвечает на вопрос «чем режут»: DNS, IP, SNI или замедлением.
+func PrintBlocking(b *Blocking) {
+	reachable := 0
+	for _, s := range b.Services {
+		if s.Status == "ok" {
+			reachable++
+		}
+	}
+	result := ui.Green(fmt.Sprintf("all %d services reachable", len(b.Services)))
+	if reachable < len(b.Services) {
+		result = ui.Yellow(fmt.Sprintf("%d of %d services reachable", reachable, len(b.Services)))
+	}
+	ui.KVRaw("Result", result)
+	w := []int{30, 12}
+	for _, s := range b.Services {
+		ui.Row(w, ui.Purple(s.Name), blockLabel(s.Status))
+		for _, p := range s.Probes {
+			ui.Row(w, "  "+ui.Cyan(p.Host), blockLabel(p.Status), ui.Dim(Truncate(p.Detail, 28)))
+		}
+	}
+}
+
+func blockLabel(status string) string {
+	switch status {
+	case "ok":
+		return ui.Green("OK")
+	case "blocked":
+		return ui.Red("Blocked")
+	case "throttled":
+		return ui.Yellow("Throttled")
+	case "partial":
+		return ui.Yellow("Partial")
+	default:
+		return ui.Dim("Failed")
+	}
+}
+
 // PrintNetwork печатает всю сетевую диагностику: задержки до якорей,
 // исходящие порты, параметры стека и трассировки. Секции с пустыми данными
 // пропускаются, поэтому вывод без root короче.
