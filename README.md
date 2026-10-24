@@ -112,7 +112,7 @@ Or build it yourself:
 ```bash
 go install github.com/Zagorsky17/ServerOk/cmd/serverok@latest
 # or
-git clone https://github.com/Zagorsky17/ServerOk && cd serverok && make build
+git clone https://github.com/Zagorsky17/ServerOk && cd ServerOk && make build
 ```
 
 ### Running it after install
@@ -134,13 +134,47 @@ If you built with `go install` instead, the binary lands in
 
 Only needed if you installed it: a plain quick-start run leaves nothing to
 remove. `serverok` is a single static binary with no config files, services or
-background processes — removing it is just deleting the file:
+background processes, so uninstalling means deleting one file.
+
+**1. Find where it is.** This prints the path of every copy on your `PATH`:
 
 ```bash
-sudo rm /usr/local/bin/serverok          # or wherever --install=<dir> put it
-# built with `go install` instead?
-rm "$(go env GOPATH)/bin/serverok"
+which -a serverok
 ```
+
+No output means nothing is installed and there is nothing to do.
+
+**2. Delete it**, using the line that matches how you installed it:
+
+| How it was installed | Default location | Remove with |
+|---|---|---|
+| `install.sh --install` | `/usr/local/bin/serverok` | `sudo rm /usr/local/bin/serverok` |
+| `install.sh --install=<dir>` | `<dir>/serverok` | `rm <dir>/serverok` (prefix `sudo` if the directory is not yours) |
+| `go install` | `$(go env GOPATH)/bin/serverok`, or `$GOBIN/serverok` if `GOBIN` is set | `rm "$(go env GOPATH)/bin/serverok"` |
+| `git clone` + `make build` | `./serverok` inside the clone | delete the clone directory: `rm -rf ServerOk` |
+
+Not sure which one applies? Delete whatever `which` found, one path at a time:
+
+```bash
+sudo rm "$(command -v serverok)"
+```
+
+`sudo` is not needed when you are root or the binary sits in your own directory.
+
+**3. Check it is gone:**
+
+```bash
+hash -r              # forget the cached path in the current shell
+which -a serverok    # no output = fully removed
+```
+
+**What is left behind.** Only the report files you asked for with `-json` /
+`-md`, in whatever directory you ran it from — delete them by hand if you no
+longer need them. The disk test removes its temporary file itself, even on
+Ctrl+C. After `go install`, the downloaded sources also stay in Go's module
+cache (`$(go env GOMODCACHE)`); it is shared with your other Go projects, so
+leave it alone unless you mean to clear it for all of them
+(`go clean -modcache`).
 
 ## The menu
 
