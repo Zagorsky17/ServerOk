@@ -1,5 +1,7 @@
 # ServerOk
 
+[English](README.md) · **Русский**
+
 Бенчмарк и диагностика VPS одним бинарником — в духе `bench.sh`, но на Go, с
 интерактивным меню выбора тестов и заметно более широким набором проверок:
 геолокация IP, **данные RDAP о том, на кого зарегистрирован IP**, репутация IP
@@ -8,6 +10,34 @@
 
 На сервере ничего не нужно: один статический бинарник, без Python,
 `speedtest-cli` и `whois`.
+
+```
+---------------- ServerOk — VPS Benchmark & Diagnostics ----------------
+ Version           : v1.0.0
+ Usage             : bash <(curl -sL .../install.sh)
+--------------------------------------------------------------------------
+
+------------------------- System Information -----------------------------
+CPU Model          : AMD EPYC 7763 64-Core Processor
+CPU Cores          : 1 @ 2449.998 MHz
+CPU Cache          : 512 KB
+AES-NI             : ✓ Enabled
+VM-x/AMD-V         : ✓ Enabled
+Total Disk         : 29.9 GB (2.9 GB Used)
+Total RAM          : 1.9 GB (297.1 MB Used)
+Total Swap         : 512.0 MB (0 KB Used)
+System Uptime      : 0 days, 0 hour 5 min
+Load Average       : 0.01, 0.12, 0.07
+OS                 : Ubuntu 24.04.4 LTS
+Arch               : amd64 (64 Bit)
+Kernel             : 6.8.0-111-generic
+TCP Congestion Ctrl: cubic
+Virtualization     : KVM
+IPv4/IPv6          : ✓ Online / ✗ Offline
+Organization       : AS212743 ETERNITY INTERNATIONAL LIMITED
+Location           : Kerkrade / NL
+Region             : Limburg
+```
 
 ## Чем это лучше `bench.sh`
 
