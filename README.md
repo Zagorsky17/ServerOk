@@ -1,5 +1,7 @@
 # ServerOk
 
+**English** · [Русский](README.ru.md)
+
 A single-binary VPS benchmark and network diagnostics tool, in the spirit of
 `bench.sh` — but written in Go, with an interactive test menu and a much wider
 set of checks: IP geolocation, **RDAP registration data (who the IP is
